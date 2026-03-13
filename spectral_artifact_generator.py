@@ -367,6 +367,11 @@ def create_morph_effect(input_file: str, output_file: str, duration: float = Non
     # Trim to target
     output = output[:target_samples]
     
+    # Ensure output directory exists
+    output_dir = os.path.dirname(output_file)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
     # Save output
     print(f"\n[5] Saving: {output_file}")
     audio_clipped = np.clip(output, -1.0, 1.0)
