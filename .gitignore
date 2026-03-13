@@ -22,7 +22,7 @@ build/
 .DS_Store
 Thumbs.db
 
-# Audio files
+# Audio files (in audio_samples folder)
 audio_samples/*.wav
 *.wav
 *.mp3
@@ -31,4 +31,3 @@ audio_samples/*.wav
 
 # Generated outputs
 *.png
-!README/*.png

@@ -210,10 +210,44 @@ def process_segment(frames, window, effect_params, segment_num, total_segments):
     return reconstructed_frames
 
 
-def create_morph_effect(input_file: str, output_file: str, duration: float = 10.0):
+def create_morph_effect(input_file: str, output_file: str, duration: float = None,
+                        effect_config: dict = None):
     """
-    Create a 10-second morph from clean audio to deconstructed artifacts.
+    Create a morph from clean audio to deconstructed artifacts.
+    
+    Parameters:
+    -----------
+    input_file : str
+        Input WAV file path
+    output_file : str
+        Output WAV file path
+    duration : float, optional
+        Target duration in seconds. If None, processes full audio.
+    effect_config : dict, optional
+        Configuration for effects:
+        - nonlinear: Apply non-linear quantization
+        - gating: Apply spectral gating/freezing
+        - smear: Apply spectral smear
+        - qstep: Quantization step (default: 50)
+        - freeze_prob: Gating probability (default: 0.2)
+        - gain_range: Tuple of (min, max) gain (default: (0, 15))
+        - smear_shift: Bin shift amount (default: 3)
+        - progress_start: When to start effects (0-1, default: 0.0)
+        - progress_end: When effects reach full (0-1, default: 1.0)
     """
+    # Default config
+    if effect_config is None:
+        effect_config = {
+            'nonlinear': True,
+            'gating': True,
+            'smear': True,
+            'qstep': 50,
+            'freeze_prob': 0.2,
+            'gain_range': (0, 15),
+            'smear_shift': 3,
+            'progress_start': 0.0,
+            'progress_end': 1.0
+        }
     print("=" * 70)
     print("Spectral Artifact Generator - Morph Effect")
     print("=" * 70)
@@ -226,13 +260,22 @@ def create_morph_effect(input_file: str, output_file: str, duration: float = 10.
     sample_rate, audio = load_wav(input_file)
     print(f"    Sample rate: {sample_rate} Hz")
     
-    # Target duration (10 seconds or shorter if input is shorter)
-    target_samples = min(int(duration * sample_rate), len(audio))
+    # Target duration (default to full audio)
+    if duration is None:
+        target_samples = len(audio)
+    else:
+        target_samples = min(int(duration * sample_rate), len(audio))
     audio = audio[:target_samples]
     print(f"    Target duration: {target_samples / sample_rate:.2f} seconds")
     
     # Frame audio
-    print(f"\n[2] Processing: Creating morph effect over {duration} seconds")
+    # Process full audio by default
+    if duration is None:
+        duration_str = "full audio"
+    else:
+        duration_str = f"{duration} seconds"
+    
+    print(f"\n[2] Processing: Creating morph effect ({duration_str})")
     print(f"    Frame size: {FRAME_SIZE}, Hop: {HOP_SIZE}")
     
     # Calculate number of frames
@@ -267,23 +310,36 @@ def create_morph_effect(input_file: str, output_file: str, duration: float = 10.
         # Calculate progress (0 to 1)
         progress = i / max(num_frames - 1, 1)
         
-        # Interpolate effect parameters based on progress
-        # 0% = clean, 100% = fully deconstructed
+        # Get effect parameters from config
+        qstep = effect_config.get('qstep', 50)
+        freeze_prob = effect_config.get('freeze_prob', 0.2)
+        gain_range = effect_config.get('gain_range', (0, 15))
+        smear_shift = effect_config.get('smear_shift', 3)
+        progress_start = effect_config.get('progress_start', 0.0)
+        progress_end = effect_config.get('progress_end', 1.0)
         
-        # Non-linear quantization (always increases)
-        qstep = 1 + progress * 99  # 1 to 100
-        if progress > 0.1:
-            coeff = nonlinear_quantize(coeff, qstep, 'sine')
+        # Calculate effect intensity based on progress
+        if progress < progress_start:
+            intensity = 0.0
+        elif progress > progress_end:
+            intensity = 1.0
+        else:
+            intensity = (progress - progress_start) / (progress_end - progress_start)
         
-        # Spectral gating (starts at 30%)
-        if progress > 0.3:
-            freeze_prob = (progress - 0.3) * 0.5  # 0 to 0.35
-            gain_range = (0, 1 + progress * 20)
-            coeff = spectral_gate_freeze(coeff, freeze_prob, gain_range)
+        # Non-linear quantization
+        if effect_config.get('nonlinear', False) and intensity > 0:
+            q = 1 + intensity * (qstep - 1)  # Interpolate Q
+            coeff = nonlinear_quantize(coeff, q, 'sine')
         
-        # Spectral smear (starts at 50%)
-        if progress > 0.5:
-            shift = int((progress - 0.5) * 20)  # 0 to 10
+        # Spectral gating/freezing
+        if effect_config.get('gating', False) and intensity > 0:
+            fp = intensity * freeze_prob
+            gr = (gain_range[0], gain_range[0] + intensity * (gain_range[1] - gain_range[0]))
+            coeff = spectral_gate_freeze(coeff, fp, gr)
+        
+        # Spectral smear
+        if effect_config.get('smear', False) and intensity > 0:
+            shift = int(intensity * smear_shift)
             if shift > 0:
                 coeff = spectral_smear(coeff, shift)
         
@@ -474,12 +530,63 @@ def demo_all_effects(input_file: str):
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description='Spectral Artifact Generator')
+    parser = argparse.ArgumentParser(
+        description='Spectral Artifact Generator',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Morph effect (default 10 seconds)
+  python spectral_artifact_generator.py input.wav
+
+  # Custom duration
+  python spectral_artifact_generator.py input.wav -d 5
+
+  # Single effect: Non-linear quantization only
+  python spectral_artifact_generator.py input.wav --nonlinear --qstep 50
+
+  # Single effect: Spectral gating only
+  python spectral_artifact_generator.py input.wav --gating --freeze-prob 0.3
+
+  # Single effect: Spectral smear only
+  python spectral_artifact_generator.py input.wav --smear --smear-shift 5
+
+  # Combined effects
+  python spectral_artifact_generator.py input.wav --nonlinear --gating --smear
+        """
+    )
+    
     parser.add_argument('input', help='Input WAV file')
-    parser.add_argument('-o', '--output', default='spectral_morph.wav',
-                       help='Output WAV file (default: spectral_morph.wav)')
-    parser.add_argument('-d', '--duration', type=float, default=10.0,
-                       help='Morph duration in seconds (default: 10)')
+    parser.add_argument('-o', '--output', default='audio_samples/spectral_output.wav',
+                       help='Output WAV file (default: audio_samples/spectral_output.wav)')
+    parser.add_argument('-d', '--duration', type=float, default=None,
+                       help='Morph duration in seconds (default: process full audio)')
+    
+    # Effect flags
+    parser.add_argument('--nonlinear', action='store_true',
+                       help='Apply non-linear quantization (sine folding)')
+    parser.add_argument('--gating', action='store_true',
+                       help='Apply spectral gating and freezing')
+    parser.add_argument('--smear', action='store_true',
+                       help='Apply spectral smear (bin shifting)')
+    
+    # Effect parameters
+    parser.add_argument('--qstep', type=float, default=50,
+                       help='Quantization step for non-linear (default: 50)')
+    parser.add_argument('--freeze-prob', type=float, default=0.2,
+                       help='Probability for gating/freezing 0-1 (default: 0.2)')
+    parser.add_argument('--gain-min', type=float, default=0,
+                       help='Min gain for freeze effect (default: 0)')
+    parser.add_argument('--gain-max', type=float, default=15,
+                       help='Max gain for freeze effect (default: 15)')
+    parser.add_argument('--smear-shift', type=int, default=3,
+                       help='Bin shift amount for smear (default: 3)')
+    
+    # Progress control
+    parser.add_argument('--progress-start', type=float, default=0.0,
+                       help='When to start effects (0-1, default: 0.0)')
+    parser.add_argument('--progress-end', type=float, default=1.0,
+                       help='When effects reach full intensity (0-1, default: 1.0)')
+    
     parser.add_argument('--demo', action='store_true',
                        help='Run demo of all individual effects')
     
@@ -488,4 +595,19 @@ if __name__ == "__main__":
     if args.demo:
         demo_all_effects(args.input)
     else:
-        create_morph_effect(args.input, args.output, args.duration)
+        create_morph_effect(
+            args.input, 
+            args.output, 
+            args.duration,
+            effect_config={
+                'nonlinear': args.nonlinear,
+                'gating': args.gating,
+                'smear': args.smear,
+                'qstep': args.qstep,
+                'freeze_prob': args.freeze_prob,
+                'gain_range': (args.gain_min, args.gain_max),
+                'smear_shift': args.smear_shift,
+                'progress_start': args.progress_start,
+                'progress_end': args.progress_end
+            }
+        )
